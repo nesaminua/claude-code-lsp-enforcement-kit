@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+// lsp-usage-tracker.js — PostToolUse hook (matcher: mcp__cclsp__*)
+// Tracks successful LSP calls and manages warmup state.
+// FAIL-OPEN: Any error silently exits without blocking.
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -83,6 +87,8 @@ process.stdin.on('end', () => {
     existing.timestamp = Date.now();
     existing.last_tool = toolName;
     fs.writeFileSync(flagPath, JSON.stringify(existing));
-  } catch {}
+  } catch {
+    // Fail open — tracker errors should never affect anything
+  }
   process.exit(0);
 });
