@@ -374,10 +374,68 @@ Expected: Claude uses `find_definition`, NOT Grep. If it tries Grep, you'll see 
 | `get_hover` | What type is X? | Type signature + docs |
 | `get_diagnostics` | Any errors in this file? | TypeScript errors/warnings |
 
+## Optional: Python, Go, Rust Support
+
+The built-in plugin only covers TypeScript/JavaScript. For other languages, install `cclsp` — a standalone MCP server that connects Claude Code to any Language Server:
+
+```bash
+npm install -g cclsp
+```
+
+Then install the language server for your language:
+
+```bash
+# Python
+pip install python-lsp-server
+
+# Go
+go install golang.org/x/tools/gopls@latest
+
+# Rust
+rustup component add rust-analyzer
+```
+
+Create `~/.config/claude/cclsp.json`:
+
+```json
+{
+  "servers": [
+    {
+      "extensions": ["py", "pyi"],
+      "command": ["pylsp"]
+    },
+    {
+      "extensions": ["go"],
+      "command": ["gopls", "serve"]
+    },
+    {
+      "extensions": ["rs"],
+      "command": ["rust-analyzer"]
+    }
+  ]
+}
+```
+
+Add to your Claude Code MCP config (`~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "cclsp": {
+      "type": "stdio",
+      "command": "cclsp",
+      "args": []
+    }
+  }
+}
+```
+
+The hooks work identically — they detect code symbols by naming convention, not by language. Once `cclsp` is connected, `find_definition`, `find_references`, etc. work across all configured languages.
+
 ## FAQ
 
 **Q: Does this work with Python/Go/Rust?**
-The built-in `typescript-lsp` plugin supports TypeScript/JavaScript. For other languages, you need a separate LSP MCP server (e.g. cclsp with pylsp/gopls). The hooks themselves are language-agnostic — they detect code symbols by naming convention, not by language.
+Out of the box — TypeScript/JavaScript only (built-in plugin). For other languages, install `cclsp` + the language server (see section above). The hooks themselves are language-agnostic.
 
 **Q: What if LSP gives wrong results?**
 The hooks don't eliminate Grep — they block Grep for *code symbols*. If LSP returns empty, Claude can still Grep with non-symbol patterns or search non-code files. The Read guard also gives 2 free reads before requiring navigation.
