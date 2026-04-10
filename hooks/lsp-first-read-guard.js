@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 'use strict';
 
+// lsp-first-read-guard.js — PreToolUse hook (matcher: Read)
+// Gates Read on code files behind LSP warmup + progressive nav requirements.
+// FAIL-OPEN: If cclsp/LSP is not available (no tsconfig), allows Read through.
+
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -18,6 +22,17 @@ const FREE_READS = 2;
 const WARN_AT = 3;
 const REQUIRE_NAV_1_AT = 4;
 const REQUIRE_NAV_2_AT = 6;
+
+function isLspProject() {
+  const cwd = process.cwd();
+  const indicators = [
+    'tsconfig.json', 'jsconfig.json', 'tsconfig.base.json',
+    'tsconfig.app.json', 'tsconfig.node.json',
+  ];
+  return indicators.some(f => {
+    try { return fs.existsSync(path.join(cwd, f)); } catch { return false; }
+  });
+}
 
 function getFlagPath() {
   const cwd = process.cwd();
@@ -49,98 +64,107 @@ let raw = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', d => { raw += d; });
 process.stdin.on('end', () => {
-  let data;
-  try { data = JSON.parse(raw); } catch { process.exit(0); }
-  if (data.tool_name !== 'Read') process.exit(0);
+  try {
+    let data;
+    try { data = JSON.parse(raw); } catch { process.exit(0); }
+    if (data.tool_name !== 'Read') process.exit(0);
 
-  const filePath = (data.tool_input?.file_path || '').trim();
-  if (!filePath) process.exit(0);
+    const filePath = (data.tool_input?.file_path || '').trim();
+    if (!filePath) process.exit(0);
 
-  if (ALLOW_NON_CODE_EXT.test(filePath)) process.exit(0);
-  if (ALLOW_CONFIG_PATTERNS.test(path.basename(filePath))) process.exit(0);
-  if (ALLOW_PATH_PATTERNS.test(filePath)) process.exit(0);
-  if (ALLOW_TEST_PATTERNS.test(filePath)) process.exit(0);
-  if (!CODE_EXTENSIONS.test(filePath)) process.exit(0);
+    // Fail open: non-code files always allowed
+    if (ALLOW_NON_CODE_EXT.test(filePath)) process.exit(0);
+    if (ALLOW_CONFIG_PATTERNS.test(path.basename(filePath))) process.exit(0);
+    if (ALLOW_PATH_PATTERNS.test(filePath)) process.exit(0);
+    if (ALLOW_TEST_PATTERNS.test(filePath)) process.exit(0);
+    if (!CODE_EXTENSIONS.test(filePath)) process.exit(0);
 
-  const flagPath = getFlagPath();
-  const flag = readFlag(flagPath);
+    // Fail open: no LSP project → allow Read without gates
+    if (!isLspProject()) process.exit(0);
 
-  if (!flag || !flag.warmup_done) {
-    emitBlock(
-      `⛔ LSP-FIRST BLOCK (Gate 1 — Warmup Required)\n\n` +
-      `Read on code file requires prior cclsp LSP warmup.\n\n` +
-      `WARMUP PROTOCOL:\n` +
-      `  1. Glob(pattern: "src/**/*.ts", head_limit: 1)\n` +
-      `  2. mcp__cclsp__get_diagnostics(<file from step 1>)\n` +
-      `  3. If "No Project" error → retry step 2\n` +
-      `  4. Once diagnostics succeeds → LSP is warm\n\n` +
-      `After warmup: ${FREE_READS} free Reads, then need LSP navigation.\n\n` +
-      `Blocked: ${filePath}\n`
-    );
-  }
+    const flagPath = getFlagPath();
+    const flag = readFlag(flagPath);
 
-  const readFiles = Array.isArray(flag.read_files) ? flag.read_files : [];
-  const navCount = flag.nav_count || 0;
-  const alreadyRead = readFiles.includes(filePath);
-  const nextReadNum = alreadyRead ? readFiles.length : readFiles.length + 1;
+    if (!flag || !flag.warmup_done) {
+      emitBlock(
+        `⛔ LSP-FIRST BLOCK (Gate 1 — Warmup Required)\n\n` +
+        `Read on code file requires prior cclsp LSP warmup.\n\n` +
+        `WARMUP PROTOCOL:\n` +
+        `  1. Glob(pattern: "src/**/*.ts", head_limit: 1)\n` +
+        `  2. mcp__cclsp__get_diagnostics(<file from step 1>)\n` +
+        `  3. If "No Project" error → retry step 2\n` +
+        `  4. Once diagnostics succeeds → LSP is warm\n\n` +
+        `After warmup: ${FREE_READS} free Reads, then need LSP navigation.\n\n` +
+        `Blocked: ${filePath}\n`
+      );
+    }
 
-  if (navCount >= 2 || alreadyRead) {
-    if (!alreadyRead) {
+    const readFiles = Array.isArray(flag.read_files) ? flag.read_files : [];
+    const navCount = flag.nav_count || 0;
+    const alreadyRead = readFiles.includes(filePath);
+    const nextReadNum = alreadyRead ? readFiles.length : readFiles.length + 1;
+
+    if (navCount >= 2 || alreadyRead) {
+      if (!alreadyRead) {
+        readFiles.push(filePath);
+        flag.read_files = readFiles;
+        flag.read_count = readFiles.length;
+        flag.timestamp = Date.now();
+        writeFlag(flagPath, flag);
+      }
+      process.exit(0);
+    }
+
+    if (nextReadNum <= FREE_READS) {
       readFiles.push(filePath);
       flag.read_files = readFiles;
       flag.read_count = readFiles.length;
       flag.timestamp = Date.now();
       writeFlag(flagPath, flag);
+      process.exit(0);
     }
-    process.exit(0);
-  }
 
-  if (nextReadNum <= FREE_READS) {
+    if (nextReadNum === WARN_AT && navCount === 0) {
+      emitWarning(
+        `⚠️ LSP-FIRST WARNING (Read ${nextReadNum}) — consider LSP navigation.\n` +
+        `Use find_workspace_symbols / find_references before more Reads.\n` +
+        `Next Read will be BLOCKED unless you use at least 1 LSP nav call.\n` +
+        `After 2 nav calls, all Reads are unlimited (surgical mode).`
+      );
+      readFiles.push(filePath);
+      flag.read_files = readFiles;
+      flag.read_count = readFiles.length;
+      flag.timestamp = Date.now();
+      writeFlag(flagPath, flag);
+      process.exit(0);
+    }
+
+    if (nextReadNum < REQUIRE_NAV_2_AT && navCount < 1) {
+      emitBlock(
+        `⛔ LSP-FIRST BLOCK (Gate 4 — LSP Navigation Required)\n\n` +
+        `Read #${nextReadNum} requires at least 1 LSP navigation call.\n` +
+        `After 1 nav call, Reads 4-5 unlock. After 2, unlimited.\n\n` +
+        `Blocked: ${filePath}\n`
+      );
+    }
+
+    if (nextReadNum >= REQUIRE_NAV_2_AT && navCount < 2) {
+      emitBlock(
+        `⛔ LSP-FIRST BLOCK (Gate 5 — Surgical Mode Required)\n\n` +
+        `Read #${nextReadNum} requires at least 2 LSP navigation calls.\n` +
+        `Current: ${navCount} nav calls. Need 2.\n\n` +
+        `Blocked: ${filePath}\n`
+      );
+    }
+
     readFiles.push(filePath);
     flag.read_files = readFiles;
     flag.read_count = readFiles.length;
     flag.timestamp = Date.now();
     writeFlag(flagPath, flag);
     process.exit(0);
-  }
-
-  if (nextReadNum === WARN_AT && navCount === 0) {
-    emitWarning(
-      `⚠️ LSP-FIRST WARNING (Read ${nextReadNum}) — consider LSP navigation.\n` +
-      `Use find_workspace_symbols / find_references before more Reads.\n` +
-      `Next Read will be BLOCKED unless you use at least 1 LSP nav call.\n` +
-      `After 2 nav calls, all Reads are unlimited (surgical mode).`
-    );
-    readFiles.push(filePath);
-    flag.read_files = readFiles;
-    flag.read_count = readFiles.length;
-    flag.timestamp = Date.now();
-    writeFlag(flagPath, flag);
+  } catch (e) {
+    // Fail open on any unexpected error
     process.exit(0);
   }
-
-  if (nextReadNum < REQUIRE_NAV_2_AT && navCount < 1) {
-    emitBlock(
-      `⛔ LSP-FIRST BLOCK (Gate 4 — LSP Navigation Required)\n\n` +
-      `Read #${nextReadNum} requires at least 1 LSP navigation call.\n` +
-      `After 1 nav call, Reads 4-5 unlock. After 2, unlimited.\n\n` +
-      `Blocked: ${filePath}\n`
-    );
-  }
-
-  if (nextReadNum >= REQUIRE_NAV_2_AT && navCount < 2) {
-    emitBlock(
-      `⛔ LSP-FIRST BLOCK (Gate 5 — Surgical Mode Required)\n\n` +
-      `Read #${nextReadNum} requires at least 2 LSP navigation calls.\n` +
-      `Current: ${navCount} nav calls. Need 2.\n\n` +
-      `Blocked: ${filePath}\n`
-    );
-  }
-
-  readFiles.push(filePath);
-  flag.read_files = readFiles;
-  flag.read_count = readFiles.length;
-  flag.timestamp = Date.now();
-  writeFlag(flagPath, flag);
-  process.exit(0);
 });
