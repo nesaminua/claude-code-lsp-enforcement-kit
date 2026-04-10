@@ -28,19 +28,34 @@ LSP approach:
 
 A rule in CLAUDE.md saying "use LSP" helps ~60% of the time. Hooks make it 100%.
 
-## Real-World Data
+## Token Savings: Grep vs LSP Per Operation
 
-From a production session on a Next.js + Supabase project (~44k LOC):
+| Task | Grep approach | LSP approach | Saved |
+|------|--------------|--------------|-------|
+| Find definition of `handleSubmit` | Grep → 23 matches (~1500 tok) + 2 wrong Reads (~5000 tok) = **~6500 tok** | `find_definition` → file:line (~80 tok) + 1 targeted Read (~500 tok) = **~580 tok** | **91%** |
+| Find all usages of `UserService` | Grep → 15 matches (~1200 tok), scan results (~300 tok) = **~1500 tok** | `find_references` → 8 file:line pairs (~150 tok) = **~150 tok** | **90%** |
+| Check type of `formData` | Read full file (~2500 tok), search visually = **~2500 tok** | `get_hover` → type signature (~60 tok) = **~60 tok** | **98%** |
+| Find component `InviteForm` | Glob (~200 tok) + Grep (~800 tok) + Read wrong file (~2500 tok) = **~3500 tok** | `find_workspace_symbols` → exact location (~100 tok) = **~100 tok** | **97%** |
+| Who calls `validateToken`? | Grep → noisy results (~1500 tok) + 3 Reads to verify (~6000 tok) = **~7500 tok** | `get_incoming_calls` → caller list (~200 tok) + 1 Read (~500 tok) = **~700 tok** | **91%** |
 
-| Metric | Value |
-|--------|-------|
-| LSP navigation calls | 25 |
-| Unique files Read | 38 |
-| Nav-to-Read ratio | 1:1.5 |
+## Real-World Data: 1 Week, 2 Projects
 
-Without LSP enforcement, the same scope would require ~100-150 exploratory Reads (reading wrong files, scanning for symbols manually). Each unnecessary Read loads 500-2500 tokens of file content.
+Aggregate from a week of development across 2 TypeScript projects:
 
-**Estimated savings: ~100,000 tokens per session.**
+| Metric | With LSP | Without LSP (estimated) |
+|--------|----------|------------------------|
+| LSP navigation calls | 39 | — |
+| Grep calls on code symbols | 0 (blocked) | ~120 |
+| Unique code files Read | 53 | ~180 |
+| Estimated navigation tokens | **~85k** | **~320k** |
+| **Tokens saved** | | **~235k (~73%)** |
+
+**How the estimate works:**
+- Each blocked Grep saves ~1200 tokens of noisy output
+- Each avoided Read saves ~1500 tokens of file content loaded into context
+- 39 LSP calls cost ~4k tokens total (precise, compact results)
+- Without LSP: ~120 Greps + ~180 Reads = ~315k tokens for the same navigation work
+- With LSP: 39 nav calls + 53 targeted Reads = ~84k tokens
 
 ## Architecture: 4 Hooks + 1 Tracker
 
