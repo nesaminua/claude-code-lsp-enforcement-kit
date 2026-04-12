@@ -5,6 +5,10 @@
 // Blocks Grep on code symbols. Suggests LSP equivalent for the active provider.
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { lookupSymbolInCaches, formatCacheHits } = require('./lib/read-cached-context');
+const log = require('./lib/logger');
+
+const HOOK = 'grep-guard';
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -22,15 +26,22 @@ process.stdin.on('end', () => {
   const searchPath = String(params.path ?? '');
   const glob    = String(params.glob ?? '');
 
+  log.start(HOOK, 'Grep', { pattern, path: searchPath, glob });
+
   if (/knowledge-vault|\.task[\\/]|\.claude[\\/]|node_modules|logs?[\\/]|docs?[\\/]|supabase[\\/]migrations/i.test(searchPath)) {
+    log.end(HOOK, 'allow', 'non-code path');
     process.exit(0);
   }
 
   if (/\.(md|txt|log|json|jsonc|yaml|yml|env|csv|toml|xml|sql|sh|css|scss)/i.test(glob)) {
+    log.end(HOOK, 'allow', 'non-code file glob');
     process.exit(0);
   }
 
-  if (pattern.length < 4) process.exit(0);
+  if (pattern.length < 4) {
+    log.end(HOOK, 'allow', 'pattern too short');
+    process.exit(0);
+  }
 
   const parts = pattern.split('|').map(p => p.trim()).filter(Boolean);
   const symbolParts = [];
@@ -38,27 +49,64 @@ process.stdin.on('end', () => {
     if (isCodeSymbol(part)) symbolParts.push(part);
   }
 
-  if (symbolParts.length === 0) process.exit(0);
+  if (symbolParts.length === 0) {
+    log.end(HOOK, 'allow', 'no code symbols detected');
+    process.exit(0);
+  }
+
+  log.detail(HOOK, 'Detected code symbols', symbolParts);
+
+  // Check cache layers for symbol information
+  const cwd = process.cwd();
+  const cacheResults = symbolParts.map(sym => ({
+    symbol: sym,
+    ...lookupSymbolInCaches(cwd, sym),
+  }));
+
+  const cacheHitCount = cacheResults.filter(r => r.hasHits).length;
+  if (cacheHitCount > 0) {
+    log.detail(HOOK, `Cache hits: ${cacheHitCount}/${symbolParts.length} symbols`, cacheResults.filter(r => r.hasHits));
+  }
+
+  // Build cache hit section if any symbols found in cache
+  const cacheHitLines = [];
+  for (const result of cacheResults) {
+    const hitMsg = formatCacheHits(result.symbol, result.repoMap, result.routes, result.schema);
+    if (hitMsg) cacheHitLines.push(hitMsg);
+  }
+  const cacheSection = cacheHitLines.length > 0
+    ? `\n📦 CACHED CONTEXT:\n${cacheHitLines.join('\n')}\n  (For references/callers, use LSP below)\n`
+    : '';
 
   const suggestions = symbolParts.map(sym => {
     const intent = /^[A-Z]/.test(sym) ? 'symbol_search' : 'references';
     return `  ${sym}:\n${buildSuggestion(sym, intent, '    ')}`;
   }).join('\n');
 
+  log.end(HOOK, 'block', `${symbolParts.length} code symbol(s): ${symbolParts.join(', ')}`);
+
   process.stderr.write(
     `\n⛔ LSP-FIRST BLOCK: ${symbolParts.length} code symbol(s) in Grep — use LSP instead\n` +
-    `Symbols: ${symbolParts.join(', ')}\nLSP tools:\n${suggestions}\n\n`
+    `Symbols: ${symbolParts.join(', ')}${cacheSection}\nLSP tools:\n${suggestions}\n\n`
   );
 
   // Emit structured JSON for programmatic consumers (monitoring, dashboards, IDE plugins).
   // `decision` and `reason` fields remain backward compatible.
   const intent = /^[A-Z]/.test(symbolParts[0]) ? 'symbol_search' : 'references';
-  console.log(JSON.stringify(buildStructuredBlockResponse({
+  const structuredResponse = buildStructuredBlockResponse({
     hook: 'lsp-first-guard',
     symbols: symbolParts,
     intent,
-    reason: `LSP-FIRST: Pattern contains code symbol(s) [${symbolParts.join(', ')}]. Use LSP tools:\n${suggestions}`,
-  })));
+    reason: `LSP-FIRST: Pattern contains code symbol(s) [${symbolParts.join(', ')}].${cacheSection ? ' Cache hits available.' : ''} Use LSP tools:\n${suggestions}`,
+  });
+  // Add cache hits to structured response
+  structuredResponse.cacheHits = cacheResults.filter(r => r.hasHits).map(r => ({
+    symbol: r.symbol,
+    repoMap: r.repoMap,
+    routes: r.routes,
+    schema: r.schema,
+  }));
+  console.log(JSON.stringify(structuredResponse));
 });
 
 function isCodeSymbol(s) {

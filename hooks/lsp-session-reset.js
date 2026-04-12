@@ -24,6 +24,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { buildCacheInitSuggestions } = require('./lib/read-cached-context');
+const log = require('./lib/logger');
+
+const HOOK = 'session-reset';
 
 const STATE_DIR = path.join(os.homedir(), '.claude', 'state');
 
@@ -44,11 +48,25 @@ process.stdin.on('end', () => {
 
   const flagPath = getFlagPath(cwd);
 
+  log.info(HOOK, 'Session start', { cwd });
+
   try {
     if (fs.existsSync(flagPath)) {
       fs.unlinkSync(flagPath);
+      log.detail(HOOK, 'Wiped stale state', { flagPath });
     }
   } catch { /* silent: hook must never block session start */ }
+
+  // Check for cache layer CLIs and emit init suggestions
+  try {
+    const suggestions = buildCacheInitSuggestions(cwd);
+    if (suggestions.length > 0) {
+      log.detail(HOOK, 'Emitting cache init suggestions', suggestions);
+      console.log(JSON.stringify({
+        systemMessage: `ℹ️ Cache Layer Suggestions:\n${suggestions.join('\n')}`
+      }));
+    }
+  } catch { /* silent: suggestions are optional */ }
 
   process.exit(0);
 });

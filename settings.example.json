@@ -1,0 +1,17 @@
+{
+  "// DEBUG LOGGING": "---------------------------------------------------",
+  "// Enable LSP Enforcement Kit debug logging.": "",
+  "// Logs all hook decisions to: ~/.claude/logs/lsp-enforcement.log": "",
+  "// Set to true to enable, false or omit to disable.": "",
+  "// Works in both CLI and VSCode extension (Antigravity).": "",
+  "lspEnforcementDebug": true,
+
+  "// EXISTING SETTINGS": "---------------------------------------------------",
+  "// Your other Claude Code settings go here.": "",
+  "// The install.sh script merges hooks into your existing settings.json.": "",
+  "// Example existing settings (do not copy these comments):": "",
+
+  "enabledPlugins": {
+    "typescript-lsp@claude-plugins-official": true
+  }
+}

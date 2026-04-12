@@ -2,6 +2,8 @@
 
 > Stop burning tokens on Grep. Make Claude navigate code like an IDE.
 
+**v3.0** adds optional integration with [Codesight](https://github.com/codesight-ai/codesight) and [OptiVault](https://github.com/optivault/optivault) — cached context layers that answer navigation questions for free (disk reads) before falling back to LSP (MCP round-trips).
+
 ## The Problem
 
 Claude Code defaults to **Grep + Read** for code navigation. This works, but it's wasteful:
@@ -57,6 +59,57 @@ Aggregate from a week of development across 2 TypeScript projects:
 - Without LSP: ~120 Greps + ~180 Reads = ~315k tokens for the same navigation work
 - With LSP: 39 nav calls + 53 targeted Reads = ~84k tokens
 
+## Tiered Navigation (v3.0)
+
+The kit now supports a three-tier navigation system ��� cheapest first:
+
+```
+Tier 1: Cached Context (free — disk read)
+  ├─ OptiVault: _optivault/_RepoMap.md (file exports index)
+  ├─ OptiVault: _optivault/<path>.md (per-file skeletons, ~50 tokens vs ~800)
+  ├─ Codesight: .codesight/routes.md (HTTP routes with handlers)
+  └─ Codesight: .codesight/schema.md (data models with fields)
+
+Tier 2: LSP (accurate — MCP round-trip, ~200-400 tokens per call)
+  ├─ cclsp: find_definition, find_references, find_workspace_symbols
+  └─ Serena: find_symbol, find_referencing_symbols, get_symbols_overview
+
+Tier 3: Direct File Access
+  └─ Read specific files at specific line ranges
+```
+
+**How it works:**
+
+When a hook blocks a Grep/Glob call, it checks the cache layers first:
+
+```
+Grep("handleSubmit")
+  ↓
+lsp-first-guard.js blocks:
+  ↓
+  Checks _optivault/_RepoMap.md → found: exported from src/actions.ts
+  Checks .codesight/routes.md → found: POST /api/submit [auth]
+  ↓
+  Block message shows:
+    ⛔ LSP-FIRST BLOCK
+    📦 CACHED CONTEXT:
+      Found in RepoMap: `handleSubmit` exported from `src/actions.ts`
+      Found in Routes: POST /api/submit [auth]
+      (For references/callers, use LSP below)
+    
+    LSP tools:
+      mcp__serena__find_referencing_symbols("handleSubmit")
+```
+
+**Skeleton reads count toward gate progression:**
+
+The 5-gate Read system now rewards cache usage. Reading OptiVault skeletons (`_optivault/*.md`) counts toward unlocking gates:
+
+- 2 skeleton reads = 1 nav credit
+- Combined with LSP calls: `effective_nav = nav_count + floor(skeleton_reads / 2)`
+
+**Graceful degradation:** If Codesight/OptiVault aren't installed, hooks behave exactly as before — LSP-only suggestions.
+
 ## Works with any LSP MCP server
 
 v2.1 introduces **provider-aware block messages**. The kit detects which LSP MCP server(s) you have installed and tailors its suggestions accordingly:
@@ -68,42 +121,49 @@ v2.1 introduces **provider-aware block messages**. The kit detects which LSP MCP
 
 Detection reads user-level Claude Code config (`~/.claude.json`, `~/.claude/settings.json`) and matches known server names. The shared helper is in `hooks/lib/detect-lsp-provider.js` — adding a new provider means adding one entry to its `PROVIDERS` registry, with no changes to the individual hooks.
 
-## Architecture: 6 Hooks + 1 Tracker
+## Architecture: 7 Hooks + 2 Libs
 
 ```
                     PreToolUse                          PostToolUse
                     ──────────                          ───────────
 
  Grep call ──→ [lsp-first-guard.js] ──→ BLOCK
-                  detects code symbols,
-                  suggests LSP equivalent
+                  checks cache layers first,
+                  shows cache hits + LSP suggestions
 
  Glob call ──→ [lsp-first-glob-guard.js] ──→ BLOCK
-                  blocks *UserService*, **/handleFoo*.ts;
-                  allows *.ts, *subdomain*, src/**
+                  checks RepoMap for symbol location,
+                  blocks *UserService*, allows *.ts
 
  Bash(grep) ──→ [bash-grep-block.js] ──→ BLOCK
                   catches grep/rg/ag/ack
                   in shell commands
 
  Read(.tsx) ──→ [lsp-first-read-guard.js] ──→ GATE
+                  suggests skeleton reads,
                   5 progressive gates
-                  (warmup → orient → nav → surgical)
+                  (skeleton reads count toward nav)
 
  Agent(impl) ─→ [lsp-pre-delegation.js] ──→ BLOCK
                   subagents can't access MCP,
                   orchestrator must pre-resolve
 
  LSP call ─────────────────────────────────────→ [lsp-usage-tracker.js]
-                                                   tracks nav_count,
-                                                   read_count, state
+ Skeleton read ────────────────────────────────→   tracks nav_count,
+                                                   skeleton_reads, state
 
                     SessionStart
                     ────────────
 
- New session ──→ [lsp-session-reset.js] ──→ WIPE
-                    clears stale nav_count for current cwd,
-                    forces fresh warmup + re-enforces gates
+ New session ──→ [lsp-session-reset.js] ──→ WIPE + SUGGEST
+                    clears stale state,
+                    suggests cache layer init if CLI available
+
+                    Shared Libraries
+                    ────────────────
+
+ hooks/lib/detect-lsp-provider.js  — provider detection (cclsp, Serena)
+ hooks/lib/read-cached-context.js  — cache lookups (OptiVault, Codesight)
 ```
 
 > **v2 note:** versions before v2 had two silent bypass routes that let
@@ -117,11 +177,11 @@ Detection reads user-level Claude Code config (`~/.claude.json`, `~/.claude/sett
 
 ## How Each Hook Works
 
-### 1. `lsp-first-guard.js` — Grep Blocker
+### 1. `lsp-first-guard.js` — Grep Blocker (Cache-Aware)
 
 **Hook type:** PreToolUse | **Matcher:** `Grep`
 
-Intercepts every Grep call. Detects code symbols in the pattern. Blocks with a suggestion to use the correct LSP tool.
+Intercepts every Grep call. Detects code symbols in the pattern. **v3.0:** Checks cache layers (OptiVault RepoMap, Codesight routes/schema) before suggesting LSP. Shows cache hits in block message.
 
 | Pattern | Detected as | Action |
 |---------|------------|--------|
@@ -147,13 +207,13 @@ LSP tools:
 ```
 If only one provider is installed, only that suggestion appears.
 
-### 2. `lsp-first-glob-guard.js` — Glob Symbol Blocker
+### 2. `lsp-first-glob-guard.js` — Glob Symbol Blocker (Cache-Aware)
 
 **Hook type:** PreToolUse | **Matcher:** `Glob`
 
 Closes the gap where Claude searches for a symbol by *filename pattern* instead of content. Without this hook, `Glob("*UserService*")` silently returns the file, Claude reads it, and LSP enforcement never fires.
 
-The guard parses the glob pattern, extracts alphabetic tokens, and blocks if any token looks like a code symbol (PascalCase, camelCase, or snake_case with 3+ parts). Lowercase-only tokens and short generic words are always allowed.
+The guard parses the glob pattern, extracts alphabetic tokens, and blocks if any token looks like a code symbol (PascalCase, camelCase, or snake_case with 3+ parts). **v3.0:** Checks OptiVault RepoMap for symbol locations before blocking — if found, shows the file path directly in the block message.
 
 | Pattern | Detected as | Action |
 |---------|------------|--------|
@@ -179,11 +239,11 @@ Same detection logic, but for `Bash(grep "UserService" src/)`, `Bash(rg handleSu
 
 Allows: `git grep` (history search), non-code paths, non-code file type filters.
 
-### 4. `lsp-first-read-guard.js` — Progressive Read Gate
+### 4. `lsp-first-read-guard.js` — Progressive Read Gate (Cache-Aware)
 
 **Hook type:** PreToolUse | **Matcher:** `Read`
 
-The most sophisticated hook. Forces a "navigate first, read targeted" workflow through 5 gates:
+The most sophisticated hook. Forces a "navigate first, read targeted" workflow through 5 gates. **v3.0:** Suggests skeleton reads in gate messages, and skeleton reads count toward gate progression (2 skeleton reads = 1 nav credit).
 
 ```
 Gate 1 — Warmup Required
@@ -270,13 +330,15 @@ Agent({
 | Standard | Implementation agents, worktree-isolated agents | BLOCK during implement phase |
 | Exempt | Reviewers, testers, planners, auditors | Never enforced (read-only) |
 
-### 6. `lsp-session-reset.js` — Stale State Wiper
+### 6. `lsp-session-reset.js` — Stale State Wiper + Cache Suggestions
 
 **Hook type:** SessionStart | **Matcher:** `true` (runs on every session start)
 
 The Read guard's state file (`~/.claude/state/lsp-ready-<cwd-hash>`) has a 24-hour expiry. Without this hook, a new session inherits yesterday's `nav_count` — and if that count was ≥ 2, the guard is permanently in **surgical mode** for today's session: unlimited Reads with zero LSP calls required. A full bypass of the enforcement chain.
 
 This hook runs once on session start and deletes the state file for the current cwd. The next Read triggers Gate 1 (warmup required), forcing at least one `get_diagnostics` call before any code file can be opened. After warmup, the standard progression kicks in (Gate 2 → 3 → 4 → 5) requiring real LSP navigation calls before surgical mode unlocks.
+
+**v3.0:** Also checks if Codesight/OptiVault CLIs are available but cache directories don't exist. If so, emits a suggestion to initialize them.
 
 **Session lifecycle with reset:**
 ```
@@ -295,11 +357,11 @@ Session start
 
 **Safety:** the hook only deletes the flag for the current cwd — other projects' state files are left alone. Failure is silent (never blocks session start).
 
-### 7. `lsp-usage-tracker.js` — State Tracker
+### 7. `lsp-usage-tracker.js` — State Tracker (Extended)
 
-**Hook type:** PostToolUse | **Matcher:** all `mcp__cclsp__*` tools
+**Hook type:** PostToolUse | **Matcher:** `mcp__cclsp__*`, `mcp__serena__*`, and `Read`
 
-Tracks successful LSP calls in a per-project state file. Other hooks read this state to make gate decisions.
+Tracks successful LSP calls AND skeleton reads in a per-project state file. Other hooks read this state to make gate decisions.
 
 **State file:** `~/.claude/state/lsp-ready-<md5-hash-of-cwd>`
 
@@ -308,12 +370,15 @@ Tracks successful LSP calls in a per-project state file. Other hooks read this s
   "cwd": "/path/to/project",
   "warmup_done": true,
   "nav_count": 25,
+  "skeleton_reads": 8,
   "read_count": 38,
   "read_files": ["src/page.tsx", "src/actions.ts"],
   "timestamp": 1775818285727,
-  "last_tool": "mcp__cclsp__find_references"
+  "last_tool": "mcp__serena__find_referencing_symbols"
 }
 ```
+
+**v3.0:** Also triggers on Read tool calls. If the file path matches `_optivault/*.md`, increments `skeleton_reads` instead of `nav_count`. This allows skeleton reads to contribute to gate progression.
 
 **Cold start handling:** Detects the cclsp "No Project" error (upstream bug where `find_workspace_symbols` doesn't prime the TypeScript project). Emits a `systemMessage` with the correct fix — call a file-based tool first. It's an ordering bug, not a timing issue.
 
@@ -333,13 +398,15 @@ Run bash install.sh in this repo to set up LSP enforcement hooks.
 ```
 
 The install script:
-- Copies 7 hooks + shared `lib/detect-lsp-provider.js` helper to `~/.claude/hooks/`
+- Copies 7 hooks + 2 shared libs to `~/.claude/hooks/`
+- Copies scripts (status checker, protocol generator) to `~/.claude/scripts/`
 - Copies the LSP-first rule to `~/.claude/rules/`
 - **Merges** hook registrations into your existing `~/.claude/settings.json` (won't overwrite your other hooks)
+- Registers tracker for cclsp, Serena, AND Read tool (for skeleton tracking)
 - Enables the built-in `typescript-lsp` plugin
 - Creates `~/.claude/state/` for tracking
 - Verifies everything at the end
-- Safe to re-run: entries are deduped by command path, so upgrading from v1/v2.0 to v2.1 just adds what's missing without touching anything else
+- Safe to re-run: entries are deduped by command path
 
 ### Option 2: Run the script yourself
 
@@ -362,17 +429,25 @@ Output:
 ```
 === LSP Enforcement Kit — Install ===
 
-[1/4] Directories ready
-[2/4] Copied 7 hooks + lib + 1 rule
-[3/4] settings.json updated (merged, not overwritten)
-[4/4] Verifying...
+[1/5] Directories ready
+[2/5] Copied 7 hooks + 2 libs + 1 rule + scripts
+[3/5] settings.json updated (merged, not overwritten)
+[4/5] Lib imports verified
+[5/5] Verifying...
 
   Hooks installed:  7/7
+  Libs installed:   2/2
   Rule installed:   yes
   Plugin enabled:   yes
   State directory:  yes
 
 Done. Restart Claude Code to activate.
+
+To generate project-specific CLAUDE.md protocol:
+  node ~/.claude/scripts/generate-unified-protocol.js [project-dir]
+
+To check hook status:
+  ~/.claude/scripts/lsp-status.sh
 ```
 
 ### Option 3: Manual setup
@@ -388,9 +463,12 @@ Done. Restart Claude Code to activate.
 #### Step 1: Copy files
 
 ```bash
-mkdir -p ~/.claude/hooks ~/.claude/state ~/.claude/rules
+mkdir -p ~/.claude/hooks ~/.claude/hooks/lib ~/.claude/state ~/.claude/rules ~/.claude/scripts
 cp hooks/*.js ~/.claude/hooks/
+cp hooks/lib/*.js ~/.claude/hooks/lib/
+cp scripts/*.js scripts/*.sh ~/.claude/scripts/
 cp rules/lsp-first.md ~/.claude/rules/
+chmod +x ~/.claude/scripts/*
 ```
 
 #### Step 2: Enable the plugin
@@ -439,6 +517,14 @@ Add to `PostToolUse` array:
 ```json
 {
   "matcher": "mcp__cclsp__find_definition|mcp__cclsp__find_references|mcp__cclsp__find_workspace_symbols|mcp__cclsp__find_implementation|mcp__cclsp__get_hover|mcp__cclsp__get_diagnostics|mcp__cclsp__get_incoming_calls|mcp__cclsp__get_outgoing_calls",
+  "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/lsp-usage-tracker.js" }]
+},
+{
+  "matcher": "mcp__serena__find_symbol|mcp__serena__find_referencing_symbols|mcp__serena__get_symbols_overview",
+  "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/lsp-usage-tracker.js" }]
+},
+{
+  "matcher": "Read",
   "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/lsp-usage-tracker.js" }]
 }
 ```
@@ -593,6 +679,61 @@ Two options:
 2. Install [Serena](https://github.com/oraios/serena) — it bundles `solidlsp`, a unified wrapper around language servers for Python, Go, Rust, Java, TypeScript, Vue, PHP, Ruby, Swift, Elixir, Clojure, Bash, PowerShell, and more. The kit will detect Serena automatically and adapt its suggestions.
 
 The hook detection logic itself is language-agnostic — it works on naming conventions (PascalCase, camelCase, snake_case), not language-specific ASTs.
+
+**Q: What are Codesight and OptiVault?**
+Optional cache layer tools that extract navigable context from your codebase:
+- **[Codesight](https://github.com/codesight-ai/codesight)** — extracts routes, schemas, components, and dependency graphs into `.codesight/` markdown files
+- **[OptiVault](https://github.com/optivault/optivault)** — generates per-file skeletons and a RepoMap index into `_optivault/`
+
+Neither is required. If present, the hooks check them first (free disk read) before suggesting LSP (MCP round-trip).
+
+**Q: How do I set up Codesight/OptiVault?**
+```bash
+# In your project directory
+npx codesight          # generates .codesight/
+npx optivault init     # generates _optivault/
+```
+
+Then generate the unified CLAUDE.md protocol:
+```bash
+node ~/.claude/scripts/generate-unified-protocol.js
+```
+
+This creates a tiered navigation section in your project's CLAUDE.md.
+
+**Q: Do skeleton reads really help unlock gates?**
+Yes. Reading `_optivault/*.md` skeletons increments `skeleton_reads` in the state file. The gate calculation uses `effective_nav = nav_count + floor(skeleton_reads / 2)`. Two skeleton reads equal one LSP navigation call for gate progression purposes.
+
+**Q: What if I don't want cache integration?**
+Don't install Codesight/OptiVault. The hooks gracefully degrade — if `.codesight/` and `_optivault/` don't exist, they behave exactly like v2.x (LSP-only suggestions).
+
+**Q: How do I debug what the hooks are doing?**
+Enable debug logging via environment variable (CLI) or settings.json (VSCode/Antigravity):
+
+```bash
+# CLI
+LSP_ENFORCE_DEBUG=1 claude
+```
+
+Or add to `~/.claude/settings.json`:
+```json
+{
+  "lspEnforcementDebug": true
+}
+```
+
+Logs go to `~/.claude/logs/lsp-enforcement.log`. Log entries include:
+- Hook name and timestamp
+- Tool being intercepted with input
+- Decision (allow/block/warn) with reason
+- Cache lookups and state reads
+
+The log auto-rotates at 5MB. View recent activity:
+```bash
+tail -100 ~/.claude/logs/lsp-enforcement.log
+```
+
+See [debug-logging.md](debug-logging.md) for full docs including log levels and example output.
 
 ## License
 
