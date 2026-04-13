@@ -17,6 +17,10 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { isLspProviderTool } = require('./lib/detect-lsp-provider');
+const { isSkeletonPath } = require('./lib/read-cached-context');
+const log = require('./lib/logger');
+
+const HOOK = 'tracker';
 
 const STATE_DIR = path.join(os.homedir(), '.claude', 'state');
 
@@ -64,9 +68,29 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(raw);
     const toolName = data.tool_name || '';
-    if (!isLspProviderTool(toolName)) process.exit(0);
+    const isLspTool = isLspProviderTool(toolName);
+    const filePath = String(data.tool_input?.file_path ?? '');
+    const isSkeletonRead = toolName === 'Read' && isSkeletonPath(filePath);
+
+    // Exit if not an LSP tool or skeleton read
+    if (!isLspTool && !isSkeletonRead) process.exit(0);
 
     const resp = data.tool_response || data.result || {};
+
+    // Handle skeleton reads (increment skeleton_reads, not nav_count)
+    if (isSkeletonRead) {
+      if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
+      const flagPath = getFlagPath();
+      const existing = readFlag(flagPath) || {
+        cwd: process.cwd(), warmup_done: false, nav_count: 0, read_count: 0, read_files: [], skeleton_reads: 0,
+      };
+      existing.skeleton_reads = (existing.skeleton_reads || 0) + 1;
+      existing.timestamp = Date.now();
+      existing.last_tool = `Read(skeleton:${filePath})`;
+      fs.writeFileSync(flagPath, JSON.stringify(existing));
+      log.info(HOOK, `Skeleton read tracked: skeleton_reads=${existing.skeleton_reads}`, { file: filePath });
+      process.exit(0);
+    }
 
     // Cold-start hint only for cclsp (upstream bug)
     if (toolName.startsWith('mcp__cclsp__') && isColdStartError(resp)) {
@@ -85,14 +109,16 @@ process.stdin.on('end', () => {
     if (!fs.existsSync(STATE_DIR)) fs.mkdirSync(STATE_DIR, { recursive: true });
     const flagPath = getFlagPath();
     const existing = readFlag(flagPath) || {
-      cwd: process.cwd(), warmup_done: false, nav_count: 0, read_count: 0, read_files: [],
+      cwd: process.cwd(), warmup_done: false, nav_count: 0, read_count: 0, read_files: [], skeleton_reads: 0,
     };
 
     if (!existing.warmup_done) {
       existing.warmup_done = true;
       existing.cold_start_retries = 0;
+      log.info(HOOK, `Warmup completed via ${toolName}`);
     } else {
       existing.nav_count = (existing.nav_count || 0) + 1;
+      log.info(HOOK, `LSP nav tracked: nav_count=${existing.nav_count}`, { tool: toolName });
     }
 
     existing.timestamp = Date.now();

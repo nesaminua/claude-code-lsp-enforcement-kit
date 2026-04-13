@@ -7,6 +7,9 @@
 // Allows: git grep, non-code paths, non-code file types.
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const log = require('./lib/logger');
+
+const HOOK = 'bash-grep';
 
 // Zero-width / formatting chars that would split tokens invisibly and
 // bypass ASCII regex symbol detection.
@@ -25,9 +28,21 @@ process.stdin.on('end', () => {
   const cmd = String(data.tool_input?.command ?? '').trim().replace(ZERO_WIDTH, '');
   // Case-insensitive to catch `GREP`, `RG` variants
   if (!/\b(grep|rg|ag|ack)\b/i.test(cmd)) process.exit(0);
-  if (/\bgit\s+grep\b/i.test(cmd)) process.exit(0);
-  if (/(?:^|[\/\\])(?:supabase[\/\\]migrations|\.task|\.claude|node_modules|knowledge-vault)(?:[\/\\]|$)/i.test(cmd)) process.exit(0);
-  if (/--include=?\S*\.(sql|md|json|yaml|yml|txt|env|sh|css|scss|log)\b/i.test(cmd)) process.exit(0);
+
+  log.start(HOOK, 'Bash', { command: cmd.substring(0, 200) });
+
+  if (/\bgit\s+grep\b/i.test(cmd)) {
+    log.end(HOOK, 'allow', 'git grep');
+    process.exit(0);
+  }
+  if (/(?:^|[\/\\])(?:supabase[\/\\]migrations|\.task|\.claude|node_modules|knowledge-vault)(?:[\/\\]|$)/i.test(cmd)) {
+    log.end(HOOK, 'allow', 'non-code path');
+    process.exit(0);
+  }
+  if (/--include=?\S*\.(sql|md|json|yaml|yml|txt|env|sh|css|scss|log)\b/i.test(cmd)) {
+    log.end(HOOK, 'allow', 'non-code file type');
+    process.exit(0);
+  }
 
   const cleaned = cmd.replace(/\\"/g, '"');
   const patternMatch =
@@ -35,7 +50,10 @@ process.stdin.on('end', () => {
     cleaned.match(/\b(?:grep|rg|ag|ack)\s+(?:-\S+\s+)*'([^']+)'/i) ||
     cleaned.match(/\b(?:grep|rg|ag|ack)\s+(?:(?:-\w+\s+(?:[a-z]+\s+)?)*?)([A-Z][a-zA-Z]\w+)/i);
 
-  if (!patternMatch) process.exit(0);
+  if (!patternMatch) {
+    log.end(HOOK, 'allow', 'no pattern extracted');
+    process.exit(0);
+  }
 
   const fullPattern = patternMatch[1];
   // Strip zero-width chars from the matched pattern (already stripped from cmd,
@@ -67,6 +85,7 @@ process.stdin.on('end', () => {
   // Previously `echo x | grep SomeCamelFunc` passed because the bypass ran before
   // symbol detection. Now: if symbols present, no bypass — always proceed to block.
   if (symbols.length === 0) {
+    log.end(HOOK, 'allow', 'no code symbols in pattern');
     const targetsCodeEarly =
       /\bsrc[\\/]|\bapp[\\/]|components[\\/]|lib[\\/]|hooks[\\/]|utils[\\/]|services[\\/]|actions[\\/]/i.test(cmd) ||
       /\.tsx?\b|\.jsx?\b/i.test(cmd);
@@ -86,6 +105,8 @@ process.stdin.on('end', () => {
     process.exit(0);
   }
 
+  log.detail(HOOK, 'Detected code symbols', symbols);
+
   const targetsCode =
     /\bsrc[\\/]|\bapp[\\/]|components[\\/]|lib[\\/]|hooks[\\/]|utils[\\/]|services[\\/]|actions[\\/]/i.test(cmd) ||
     /\.tsx?\b|\.jsx?\b/i.test(cmd) ||
@@ -101,7 +122,12 @@ process.stdin.on('end', () => {
 
   // Symbols are present — only bypass if the command is unambiguously
   // targeting non-code files AND doesn't touch code paths.
-  if (hasNonCodeTarget && !targetsCode) process.exit(0);
+  if (hasNonCodeTarget && !targetsCode) {
+    log.end(HOOK, 'allow', 'non-code target despite symbols');
+    process.exit(0);
+  }
+
+  log.end(HOOK, 'block', `${symbols.length} code symbol(s): ${symbols.join(', ')}`);
 
   const suggestions = symbols.map(sym => {
     const intent = /^[A-Z]/.test(sym) ? 'symbol_search' : 'references';

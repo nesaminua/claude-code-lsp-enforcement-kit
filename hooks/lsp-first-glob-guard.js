@@ -26,6 +26,10 @@
  */
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { lookupSymbolInRepoMap } = require('./lib/read-cached-context');
+const log = require('./lib/logger');
+
+const HOOK = 'glob-guard';
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -42,11 +46,15 @@ process.stdin.on('end', () => {
 
   const searchPath = String(data.tool_input?.path ?? '').trim();
 
+  log.start(HOOK, 'Glob', { pattern, path: searchPath });
+
   // ── Allow: non-code paths (anchored — bare substring would let
   //    "myknowledge-vaultxxx" bypass detection) ──────────────────────────
   const NON_CODE_PATH = /(?:^|[\/\\])(?:knowledge-vault|\.task|\.claude|node_modules|supabase[\/\\]migrations|\.git)(?:[\/\\]|$)/i;
-  if (NON_CODE_PATH.test(searchPath)) process.exit(0);
-  if (NON_CODE_PATH.test(pattern)) process.exit(0);
+  if (NON_CODE_PATH.test(searchPath) || NON_CODE_PATH.test(pattern)) {
+    log.end(HOOK, 'allow', 'non-code path');
+    process.exit(0);
+  }
 
   // Extract alphabetic tokens from the pattern (strip *, /, ., brackets, etc.)
   const tokens = pattern
@@ -55,18 +63,43 @@ process.stdin.on('end', () => {
     .filter(Boolean);
 
   const symbolTokens = tokens.filter(t => isCodeSymbol(t));
-  if (symbolTokens.length === 0) process.exit(0);
+  if (symbolTokens.length === 0) {
+    log.end(HOOK, 'allow', 'no code symbols in pattern');
+    process.exit(0);
+  }
+
+  log.detail(HOOK, 'Detected code symbols', symbolTokens);
+
+  // Check RepoMap for symbol locations
+  const cwd = process.cwd();
+  const repoMapHits = [];
+  for (const sym of symbolTokens) {
+    const hit = lookupSymbolInRepoMap(cwd, sym);
+    if (hit) repoMapHits.push({ symbol: sym, ...hit });
+  }
+
+  if (repoMapHits.length > 0) {
+    log.detail(HOOK, `RepoMap hits: ${repoMapHits.length}`, repoMapHits);
+  }
+
+  // Build cache section if any symbols found in RepoMap
+  const cacheSection = repoMapHits.length > 0
+    ? `\n📦 FOUND IN REPOMAP:\n${repoMapHits.map(h => `  ${h.symbol} → ${h.file}`).join('\n')}\n  (For references/callers, use LSP below)\n\n`
+    : '';
 
   const suggestions = symbolTokens.map(sym => {
     const intent = /^[A-Z]/.test(sym) ? 'symbol_search' : 'references';
     return `  ${sym}:\n${buildSuggestion(sym, intent, '    ')}`;
   }).join('\n');
 
+  log.end(HOOK, 'block', `${symbolTokens.length} code symbol(s): ${symbolTokens.join(', ')}`);
+
   const msg =
     `\n⛔ LSP-FIRST BLOCK: Glob pattern contains ${symbolTokens.length} code symbol(s)\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     `Pattern: ${pattern}\n` +
-    `Symbols: ${symbolTokens.join(', ')}\n\n` +
+    `Symbols: ${symbolTokens.join(', ')}\n` +
+    `${cacheSection}` +
     `LSP is always connected. Searching files by symbol name is LSP territory:\n` +
     `${suggestions}\n\n` +
     `If you need to find files by extension or concept, use lowercase\n` +
@@ -76,12 +109,15 @@ process.stdin.on('end', () => {
   process.stderr.write(msg);
 
   const intent = /^[A-Z]/.test(symbolTokens[0]) ? 'symbol_search' : 'references';
-  console.log(JSON.stringify(buildStructuredBlockResponse({
+  const structuredResponse = buildStructuredBlockResponse({
     hook: 'lsp-first-glob-guard',
     symbols: symbolTokens,
     intent,
-    reason: `LSP-FIRST: Glob pattern contains code symbol(s) [${symbolTokens.join(', ')}]. Use LSP tools instead of filename-based symbol search.`,
-  })));
+    reason: `LSP-FIRST: Glob pattern contains code symbol(s) [${symbolTokens.join(', ')}].${repoMapHits.length > 0 ? ' RepoMap hits available.' : ''} Use LSP tools instead of filename-based symbol search.`,
+  });
+  // Add RepoMap hits to structured response
+  structuredResponse.cacheHits = repoMapHits;
+  console.log(JSON.stringify(structuredResponse));
 });
 
 // Zero-width / formatting chars that would split tokens invisibly and
