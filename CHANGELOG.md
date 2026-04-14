@@ -4,6 +4,13 @@ All notable changes to the LSP Enforcement Kit. Format based on [Keep a Changelo
 
 ## [Unreleased]
 
+## [2.3.1] — 2026-04-14
+
+### Changed
+- **README redesign** with centered hero section, shields.io badges (`for-the-badge` style), quick-navigation links, and emoji section markers. Docs-only release — no code changes.
+- New "In Action" section at the top showing real block-message examples for Grep and Read gates so visitors immediately see what the kit does.
+- "Quick Start" promoted to a top-level section right under the hero for 5-second onboarding.
+
 ## [2.3.0] — 2026-04-14
 
 ### Added

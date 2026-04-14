@@ -1,8 +1,83 @@
-# LSP Enforcement Kit for Claude Code
+<h1 align="center">LSP Enforcement Kit</h1>
 
-> Stop burning tokens on Grep. Make Claude navigate code like an IDE.
+<p align="center">
+  <strong>Physical enforcement of LSP-first navigation in Claude Code.</strong>
+  <br>
+  Stop burning tokens on Grep. Make Claude navigate code like an IDE — 100% of the time.
+</p>
 
-## The Problem
+<p align="center">
+  <a href="https://github.com/nesaminua/claude-code-lsp-enforcement-kit/releases"><img src="https://img.shields.io/github/v/release/nesaminua/claude-code-lsp-enforcement-kit?style=for-the-badge&color=6366f1" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/nesaminua/claude-code-lsp-enforcement-kit?style=for-the-badge&color=10b981" alt="License"></a>
+  <a href="https://github.com/nesaminua/claude-code-lsp-enforcement-kit/stargazers"><img src="https://img.shields.io/github/stars/nesaminua/claude-code-lsp-enforcement-kit?style=for-the-badge&color=f59e0b" alt="Stars"></a>
+  <img src="https://img.shields.io/badge/Claude%20Code-compatible-8b5cf6?style=for-the-badge" alt="Claude Code compatible">
+</p>
+
+<p align="center">
+  <a href="#-quick-start">Quick Start</a> &bull;
+  <a href="#-the-problem">Why</a> &bull;
+  <a href="#-token-savings-grep-vs-lsp-per-operation">Savings</a> &bull;
+  <a href="#-architecture-6-hooks--1-tracker">Architecture</a> &bull;
+  <a href="#-how-each-hook-works">Hooks</a> &bull;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+---
+
+## In Action
+
+When Claude tries to `Grep` for a code symbol, the hook blocks with a copy-pasteable LSP command:
+
+```
+⛔ LSP-FIRST BLOCK: Pattern contains code symbol(s) — use LSP instead
+Symbols: handleSubmit, UserService
+
+LSP tools:
+  handleSubmit:
+    mcp__cclsp__find_references("handleSubmit")  (cclsp)
+
+  UserService:
+    mcp__cclsp__find_workspace_symbols("UserService")  (cclsp)
+```
+
+When Claude tries to `Read` a code file without warming up LSP, the progressive gate blocks:
+
+```
+🛡️  LSP-FIRST READ GATE — Gate 1: warmup required
+
+  Call one of these first:
+    mcp__cclsp__get_diagnostics("src/page.tsx")  (cclsp)
+
+  CONCRETE CALL FOR THIS FILE (works in any project):
+    mcp__cclsp__get_diagnostics("src/page.tsx")
+
+  After warmup: 2 free Reads, then need LSP navigation.
+```
+
+No generic advice. Every block message is parametrized by the actual file Claude tried to touch.
+
+---
+
+## ⚡ Quick Start
+
+```bash
+git clone https://github.com/nesaminua/claude-code-lsp-enforcement-kit.git
+cd claude-code-lsp-enforcement-kit
+bash install.sh
+# Windows: pwsh ./install.ps1
+```
+
+Restart Claude Code. Done. The installer is idempotent — safe to re-run on upgrades.
+
+Verify:
+
+```bash
+bash scripts/lsp-status.sh
+```
+
+---
+
+## 🎯 The Problem
 
 Claude Code defaults to **Grep + Read** for code navigation. This works, but it's wasteful:
 
@@ -28,7 +103,7 @@ LSP approach:
 
 A rule in CLAUDE.md saying "use LSP" helps ~60% of the time. Hooks make it 100%.
 
-## Token Savings: Grep vs LSP Per Operation
+## 💰 Token Savings: Grep vs LSP Per Operation
 
 | Task | Grep approach | LSP approach | Saved |
 |------|--------------|--------------|-------|
@@ -38,7 +113,7 @@ A rule in CLAUDE.md saying "use LSP" helps ~60% of the time. Hooks make it 100%.
 | Find component `InviteForm` | Glob (~200 tok) + Grep (~800 tok) + Read wrong file (~2500 tok) = **~3500 tok** | `find_workspace_symbols` → exact location (~100 tok) = **~100 tok** | **97%** |
 | Who calls `validateToken`? | Grep → noisy results (~1500 tok) + 3 Reads to verify (~6000 tok) = **~7500 tok** | `get_incoming_calls` → caller list (~200 tok) + 1 Read (~500 tok) = **~700 tok** | **91%** |
 
-## Real-World Data: 1 Week, 2 Projects
+## 📊 Real-World Data: 1 Week, 2 Projects
 
 Aggregate from a week of development across 2 TypeScript projects:
 
@@ -57,7 +132,7 @@ Aggregate from a week of development across 2 TypeScript projects:
 - Without LSP: ~120 Greps + ~180 Reads = ~315k tokens for the same navigation work
 - With LSP: 39 nav calls + 53 targeted Reads = ~84k tokens
 
-## Works with any LSP MCP server
+## 🔌 Works with any LSP MCP server
 
 v2.1 introduces **provider-aware block messages**. The kit detects which LSP MCP server(s) you have installed and tailors its suggestions accordingly:
 
@@ -68,7 +143,7 @@ v2.1 introduces **provider-aware block messages**. The kit detects which LSP MCP
 
 Detection reads user-level Claude Code config (`~/.claude.json`, `~/.claude/settings.json`) and matches known server names. The shared helper is in `hooks/lib/detect-lsp-provider.js` — adding a new provider means adding one entry to its `PROVIDERS` registry, with no changes to the individual hooks.
 
-## Architecture: 6 Hooks + 1 Tracker
+## 🏗️ Architecture: 6 Hooks + 1 Tracker
 
 ```
                     PreToolUse                          PostToolUse
@@ -115,7 +190,7 @@ Detection reads user-level Claude Code config (`~/.claude.json`, `~/.claude/sett
 > v1, re-run `bash install.sh` — it merges the new hooks without touching
 > your existing settings.
 
-## How Each Hook Works
+## 🔧 How Each Hook Works
 
 ### 1. `lsp-first-guard.js` — Grep Blocker
 
@@ -317,7 +392,7 @@ Tracks successful LSP calls in a per-project state file. Other hooks read this s
 
 **Cold start handling:** Detects the cclsp "No Project" error (upstream bug where `find_workspace_symbols` doesn't prime the TypeScript project). Emits a `systemMessage` with the correct fix — call a file-based tool first. It's an ordering bug, not a timing issue.
 
-## Installation
+## 📦 Installation
 
 ### Option 1: Give the repo to Claude Code (recommended)
 
@@ -491,7 +566,7 @@ Diagnostic summary
 
 Or restart Claude Code and ask "Where is handleSubmit defined?" — Claude should use `find_definition`, not Grep.
 
-## LSP Tool Reference
+## 📚 LSP Tool Reference
 
 | Tool | Question It Answers | Output |
 |------|-------------------|--------|
@@ -504,7 +579,7 @@ Or restart Claude Code and ask "Where is handleSubmit defined?" — Claude shoul
 | `get_hover` | What type is X? | Type signature + docs |
 | `get_diagnostics` | Any errors in this file? | TypeScript errors/warnings |
 
-## Optional: Python, Go, Rust Support
+## 🐍 Optional: Python, Go, Rust Support
 
 The built-in plugin only covers TypeScript/JavaScript. For other languages, install `cclsp` — a standalone MCP server that connects Claude Code to any Language Server:
 
@@ -562,7 +637,7 @@ Add to your Claude Code MCP config (`~/.claude.json`):
 
 The hooks work identically — they detect code symbols by naming convention, not by language. Once `cclsp` is connected, `find_definition`, `find_references`, etc. work across all configured languages.
 
-## FAQ
+## ❓ FAQ
 
 **Q: Does this work with Python/Go/Rust?**
 Out of the box — TypeScript/JavaScript only (built-in plugin). For other languages, install `cclsp` + the language server (see section above). The hooks themselves are language-agnostic.
@@ -594,6 +669,16 @@ Two options:
 
 The hook detection logic itself is language-agnostic — it works on naming conventions (PascalCase, camelCase, snake_case), not language-specific ASTs.
 
-## License
+## 📄 License
 
-MIT
+MIT — see [LICENSE](LICENSE)
+
+---
+
+<p align="center">
+  Made for Claude Code power users who care about token efficiency.
+  <br>
+  <a href="https://github.com/nesaminua/claude-code-lsp-enforcement-kit/issues">Report an issue</a> &bull;
+  <a href="https://github.com/nesaminua/claude-code-lsp-enforcement-kit/releases">Releases</a> &bull;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
