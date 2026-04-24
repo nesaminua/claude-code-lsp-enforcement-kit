@@ -4,6 +4,9 @@ All notable changes to the LSP Enforcement Kit. Format based on [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+- **Project-scoped enforcement** via new shared helper `hooks/lib/project-scope.js`. All four blocking hooks (`lsp-first-guard.js`, `lsp-first-glob-guard.js`, `lsp-first-read-guard.js`, `bash-grep-block.js`) now short-circuit to allow when the tool's target path resolves outside `$CLAUDE_PROJECT_DIR`. Rationale: Serena and cclsp index the current project; outside the project they cannot answer the same query, so blocking Grep/Glob/Read/shell-grep leaves the agent with no working alternative. Inside the project, behavior is unchanged. Boundary rule: `realpath` the target and `$CLAUDE_PROJECT_DIR`, then prefix-match on a path-separator boundary — handles symlinks and relative paths consistently. Fail-open when `CLAUDE_PROJECT_DIR` is unset or unresolvable (keeps non-project Claude sessions usable). Missing `path` field on Grep/Glob is treated as inside (it defaults to cwd, which is conventionally the project root).
+
 ## [2.3.2] — 2026-04-14
 
 ### Added

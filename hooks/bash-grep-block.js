@@ -7,6 +7,7 @@
 // Allows: git grep, non-code paths, non-code file types.
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { isInsideProject } = require('./lib/project-scope');
 
 // Zero-width / formatting chars that would split tokens invisibly and
 // bypass ASCII regex symbol detection.
@@ -19,6 +20,11 @@ process.stdin.on('end', () => {
   let data;
   try { data = JSON.parse(raw); } catch { process.exit(0); }
   if (data.tool_name !== 'Bash') process.exit(0);
+
+  // Scope enforcement to the current project. Bash has no path field; use
+  // session cwd as the best available signal. Outside the project, Serena
+  // cannot answer the same query so grep/rg/ag/ack must be allowed.
+  if (!isInsideProject(data.cwd, data.cwd)) process.exit(0);
 
   // String coercion: non-string command would throw on .trim() and fail-open.
   // Zero-width strip: prevents `grep\u200BUserFunc` evasion.
