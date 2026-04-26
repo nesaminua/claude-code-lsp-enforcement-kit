@@ -258,6 +258,8 @@ Same detection logic, but for `Bash(grep "UserService" src/)`, `Bash(rg handleSu
 
 Allows: `git grep` (history search), non-code paths, non-code file type filters.
 
+Project scope is parsed from the command itself. A leading `cd <path>` (or `(cd <path>`) and explicit positional path args to `grep`/`rg`/`ag`/`ack` are resolved against `$CLAUDE_PROJECT_DIR`. `find <path> ... -exec grep` and `find <path> ... | xargs grep` use the find start dir. If any resolved target lies inside the project, the hook enforces; if all are outside, it allows. Unparseable `cd` targets (env vars, command substitution) fall back to the session cwd, never silent allow.
+
 ### 4. `lsp-first-read-guard.js` — Progressive Read Gate
 
 **Hook type:** PreToolUse | **Matcher:** `Read`
