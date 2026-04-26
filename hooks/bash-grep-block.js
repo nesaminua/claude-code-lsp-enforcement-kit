@@ -7,6 +7,7 @@
 // Allows: git grep, non-code paths, non-code file types.
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { bashTargetVerdict } = require('./lib/bash-target');
 
 // Zero-width / formatting chars that would split tokens invisibly and
 // bypass ASCII regex symbol detection.
@@ -23,6 +24,13 @@ process.stdin.on('end', () => {
   // String coercion: non-string command would throw on .trim() and fail-open.
   // Zero-width strip: prevents `grep\u200BUserFunc` evasion.
   const cmd = String(data.tool_input?.command ?? '').trim().replace(ZERO_WIDTH, '');
+
+  // Scope enforcement to the current project. Parses leading `cd <path>`
+  // and explicit path args to grep/rg/ag/ack (or find ... -exec/xargs grep)
+  // so commands targeting paths outside CLAUDE_PROJECT_DIR are allowed,
+  // even when session cwd is inside the project. See lib/bash-target.js.
+  if (bashTargetVerdict(cmd, data.cwd) === 'allow') process.exit(0);
+
   // Case-insensitive to catch `GREP`, `RG` variants
   if (!/\b(grep|rg|ag|ack)\b/i.test(cmd)) process.exit(0);
   if (/\bgit\s+grep\b/i.test(cmd)) process.exit(0);

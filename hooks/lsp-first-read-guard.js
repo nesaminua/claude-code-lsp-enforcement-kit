@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { buildWarmupInstructions, buildFileWarmupCall } = require('./lib/detect-lsp-provider');
+const { isInsideProject } = require('./lib/project-scope');
 
 /**
  * Build a copy-pasteable warmup call parametrized by the exact file the
@@ -68,6 +69,11 @@ process.stdin.on('end', () => {
   // String coercion: non-string input would throw on .trim() and fail-open.
   const filePath = String(data.tool_input?.file_path ?? '').trim();
   if (!filePath) process.exit(0);
+
+  // Scope enforcement to the current project. Outside the project, Serena
+  // cannot answer the same query (its index is project-scoped), so blocking
+  // Read would leave the agent with no working alternative.
+  if (!isInsideProject(filePath, data.cwd)) process.exit(0);
 
   if (ALLOW_NON_CODE_EXT.test(filePath)) process.exit(0);
   if (ALLOW_CONFIG_PATTERNS.test(path.basename(filePath))) process.exit(0);

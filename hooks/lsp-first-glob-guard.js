@@ -26,6 +26,7 @@
  */
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { isInsideProject } = require('./lib/project-scope');
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -35,6 +36,11 @@ process.stdin.on('end', () => {
   try { data = JSON.parse(raw); } catch { process.exit(0); }
 
   if (data.tool_name !== 'Glob') process.exit(0);
+
+  // Scope enforcement to the current project. Outside the project, Serena
+  // cannot answer the same query (its index is project-scoped), so blocking
+  // Glob would leave the agent with no working alternative.
+  if (!isInsideProject(data.tool_input?.path, data.cwd)) process.exit(0);
 
   // String coercion: non-string input would throw on .trim() and fail-open.
   const pattern = String(data.tool_input?.pattern ?? '').trim();

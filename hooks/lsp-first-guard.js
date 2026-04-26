@@ -5,6 +5,7 @@
 // Blocks Grep on code symbols. Suggests LSP equivalent for the active provider.
 
 const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const { isInsideProject } = require('./lib/project-scope');
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -14,6 +15,11 @@ process.stdin.on('end', () => {
   try { data = JSON.parse(raw); } catch (e) { process.exit(0); }
 
   if (data.tool_name !== 'Grep') process.exit(0);
+
+  // Scope enforcement to the current project. Outside the project, Serena
+  // cannot answer the same query (its index is project-scoped), so blocking
+  // Grep would leave the agent with no working alternative.
+  if (!isInsideProject(data.tool_input?.path, data.cwd)) process.exit(0);
 
   const params  = data.tool_input || {};
   // String coercion: non-string pattern (number, array, etc.) would throw on .trim()
