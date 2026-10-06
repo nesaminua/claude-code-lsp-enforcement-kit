@@ -4,6 +4,22 @@ All notable changes to the LSP Enforcement Kit. Format based on [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+- `test/`: a zero-dependency `node:test` suite for the grep guards. Run it with `node --test test/*.test.js`.
+
+### Fixed
+- **`bash-grep-block.js` parses each grep invocation instead of matching regexes over the whole command.** `hooks/lib/grep-command.js` tokenizes the command as the shell does and parses each grep/rg/ag/ack invocation with that tool's option table (from grep(1), `rg --help`, ag's getopt source and ack's Getopt::Long spec). Each invocation is judged on its own. Code searches the regexes let through, now blocked:
+  - a bare pattern after a flag: `grep -rn getUserById src/` (the pattern was read as the flag's value, and `src` as the pattern);
+  - an option value before the pattern: `grep --include '*.ts' "getUserById" .`, `rg -g '!*.tex' "getUserById" src/`;
+  - any grep after the first pattern found: `grep -rn "x" src/; grep -rn 'getUserById' src/`;
+  - any grep in a command that also ran `git grep` or named an exempt path such as `node_modules/`;
+  - greps inside `bash -c`, heredocs fed to a shell, and `$(...)`, and `egrep`/`fgrep`.
+
+  An option the tables do not know makes the guard treat every word of that invocation as a possible pattern. Any grep mention the parser does not account for (inside `ssh host "..."`, `docker exec`, an unknown wrapper, text it cannot tokenize) gets the previous regex check at that spot, so the parse only ever refines a decision about text it understood.
+- **Listing, count and quiet greps are no longer blocked.** `bash-grep-block.js` skips invocations with `-l`, `-L`, `-c`, `-q` or their long forms (per tool: rg's `-L` is `--follow` and stays guarded; options count wherever they appear before `--`, as all four tools read them), and `lsp-first-guard.js` skips `output_mode` `files_with_matches` (the Grep default) and `count`. Their output is file paths or numbers, so there is no output for LSP to shrink, and "which files mention X" has no LSP equivalent. Both block messages now name that route.
+- **Greps over non-code files are no longer blocked.** Only a short list of non-code extensions was recognized, so `.tex`, `.bib`, `.sty`, `.csv` and similar files were blocked although no LSP indexes them. Both guards now allow a search whose every target is on the non-code list in `hooks/lib/code-files.js`: the Bash guard looks at operands, and at `--include`/`-g` filters when they apply to every operand (grep filters named files; rg filters only inside directories it walks). The Grep tool guard looks at `path`, and at `glob`/`type` when `path` is a directory. Only positive evidence counts: an unlisted extension, a directory (including an existing one named like a file, such as `vendor/golang.org`), a dotted name like `MyApp.Web`, a variable, stdin, or a negated or multi-part glob stays guarded.
+- **Exempt paths without a leading slash.** `grep -rn X node_modules/` was blocked because the exemption required `/` before `node_modules`; exempt paths are now matched per operand.
+
 ## [2.3.2] — 2026-04-14
 
 ### Added
