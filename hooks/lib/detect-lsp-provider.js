@@ -29,6 +29,18 @@ const os = require('os');
 
 const HOME = os.homedir();
 
+// Placeholders for the arguments of a references call that come from the
+// result of the find call. Both providers need the symbol's exact name (for
+// Serena its name path, e.g. UserService/findOne) and the file that defines
+// it, and a grep pattern is often only part of a name (grep "Overview" finds
+// DockOverview).
+const FROM_FIND = {
+  file: '<file from find>',
+  name: '<name from find>',
+  namePath: '<name_path from find>',
+};
+const PLACEHOLDERS = new Set(Object.values(FROM_FIND));
+
 // ── Provider registry ──────────────────────────────────────────────────────
 // Each entry maps abstract navigation intents to concrete tool names.
 // Add new providers here when their MCP servers become popular.
@@ -60,6 +72,12 @@ const PROVIDERS = {
     },
     // First call to make on session start — primes the TS project
     warmup: { tool: 'get_diagnostics', note: 'primes TS server (cclsp upstream bug #43 workaround)' },
+    // LSP equivalent of a grep for a name; see buildGrepSuggestion.
+    // workspace/symbol queries are matched loosely by the language server.
+    grep: {
+      find: { tool: 'find_workspace_symbols', args: sym => ({ query: sym }) },
+      uses: { tool: 'find_references', args: () => ({ file_path: FROM_FIND.file, symbol_name: FROM_FIND.name }) },
+    },
   },
   serena: {
     label:        'Serena',
@@ -81,6 +99,10 @@ const PROVIDERS = {
     },
     // Serena's recommended "first tool to call when understanding a file"
     warmup: { tool: 'get_symbols_overview', note: "Serena's 'first tool to understand a file'" },
+    grep: {
+      find: { tool: 'find_symbol', args: sym => ({ name_path_pattern: sym, substring_matching: true }) },
+      uses: { tool: 'find_referencing_symbols', args: () => ({ name_path: FROM_FIND.namePath, relative_path: FROM_FIND.file }) },
+    },
   },
 };
 
@@ -173,6 +195,63 @@ function buildSuggestion(symbol, intent, indent = '  ') {
     lines.push(`${indent}${prov.prefix}${toolName}("${symbol}")  (${prov.label})`);
   }
   return lines.join('\n');
+}
+
+// Render a call with its real parameter names, e.g.
+//   mcp__serena__find_symbol(name_path_pattern="Foo", substring_matching=true)
+// Values go through JSON.stringify, so quotes in a symbol stay escaped.
+function formatCall(prefix, tool, args) {
+  const list = Object.entries(args)
+    .map(([k, v]) => `${k}=${PLACEHOLDERS.has(v) ? v : JSON.stringify(v)}`)
+    .join(', ');
+  return `${prefix}${tool}(${list})`;
+}
+
+/**
+ * Suggestion block for a grep that searched for a code symbol.
+ *
+ * A grep matches a name where it is defined and everywhere it is used, and
+ * often as part of longer names, so no single call is its equivalent and
+ * the name's casing says nothing about which one was meant. Each provider
+ * gets two lines: find the symbol by name or substring, then list the
+ * references of the symbol the find returned (its exact name and file).
+ */
+function buildGrepSuggestion(symbol, indent = '  ') {
+  const providers = detectProviders();
+  if (providers.length === 0) return buildSuggestion(symbol, 'references', indent);
+  if (isFileName(symbol)) return `${indent}(a file name, not a symbol: no LSP call finds it)`;
+  const name = searchName(symbol);
+
+  const lines = [];
+  for (const key of providers) {
+    const prov = PROVIDERS[key];
+    if (!prov?.grep) continue;
+    for (const step of ['find', 'uses']) {
+      const { tool, args } = prov.grep[step];
+      lines.push(`${indent}${step}: ${formatCall(prov.prefix, tool, args(name))}  (${prov.label})`);
+    }
+  }
+  return lines.join('\n');
+}
+
+// Symbol names hold no dots: the Grep guard's `router.refresh` is found as
+// `refresh`.
+function searchName(symbol) {
+  return String(symbol).split('.').pop();
+}
+
+// The Grep guard's dotted shape also matches file names (utils.ts,
+// package.json). Their last segment is an extension, and searching symbols
+// for "ts" would return every symbol containing it.
+const FILE_EXTENSIONS = new Set([
+  'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'json', 'md', 'py', 'go', 'rs',
+  'java', 'kt', 'rb', 'php', 'cs', 'css', 'scss', 'html', 'yml', 'yaml', 'toml',
+  'lock', 'txt', 'sh', 'vue', 'svelte', 'sql', 'xml', 'env',
+]);
+
+function isFileName(symbol) {
+  const parts = String(symbol).split('.');
+  return parts.length > 1 && FILE_EXTENSIONS.has(parts.pop().toLowerCase());
 }
 
 /**
@@ -306,6 +385,36 @@ function buildStructuredSuggestions(symbol, intent) {
 }
 
 /**
+ * Structured form of buildGrepSuggestion. Shape:
+ *   [{ provider, label, step: 'find' | 'uses', tool, args, fromFind, displayTool }]
+ * `args` uses the provider's real parameter names. `fromFind` lists the args
+ * that hold a placeholder ('<name from find>', '<file from find>') to fill in
+ * from the result of the 'find' step before the call can run.
+ */
+function buildStructuredGrepSuggestions(symbol) {
+  const out = [];
+  if (isFileName(symbol)) return out;
+  for (const key of detectProviders()) {
+    const prov = PROVIDERS[key];
+    if (!prov?.grep) continue;
+    for (const step of ['find', 'uses']) {
+      const { tool, args } = prov.grep[step];
+      const a = args(searchName(symbol));
+      out.push({
+        provider:    key,
+        label:       prov.label,
+        step,
+        tool:        `${prov.prefix}${tool}`,
+        args:        a,
+        fromFind:    Object.keys(a).filter(k => PLACEHOLDERS.has(a[k])),
+        displayTool: formatCall(prov.prefix, tool, a),
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Assemble a structured block response that blocking hooks can emit via
  * console.log(JSON.stringify(...)). Keeps `decision` and `reason` fields
  * intact (backward compatible with existing consumers) while adding rich
@@ -316,14 +425,17 @@ function buildStructuredSuggestions(symbol, intent) {
  * @param {string[]} params.symbols  detected code symbols from user input
  * @param {string} params.intent     navigation intent for suggestions
  * @param {string} params.reason     human-readable reason (goes into `reason` field)
+ * @param {function} [params.suggestionsFor]  symbol -> structured suggestions;
+ *                                   defaults to buildStructuredSuggestions(symbol, intent)
  * @returns {object} JSON-serialisable block response
  */
-function buildStructuredBlockResponse({ hook, symbols, intent, reason }) {
+function buildStructuredBlockResponse({ hook, symbols, intent, reason, suggestionsFor }) {
   const providers = detectProviders();
   const suggestions = [];
   const symbolList = Array.isArray(symbols) ? symbols : [];
   for (const sym of symbolList) {
-    for (const s of buildStructuredSuggestions(sym, intent)) {
+    const built = suggestionsFor ? suggestionsFor(sym) : buildStructuredSuggestions(sym, intent);
+    for (const s of built) {
       suggestions.push({ symbol: String(sym), ...s });
     }
   }
@@ -342,10 +454,12 @@ module.exports = {
   PROVIDERS,
   detectProviders,
   buildSuggestion,
+  buildGrepSuggestion,
   buildWarmupInstructions,
   buildFileWarmupCall,
   getTrackerToolNameRegex,
   isLspProviderTool,
   buildStructuredSuggestions,
+  buildStructuredGrepSuggestions,
   buildStructuredBlockResponse,
 };

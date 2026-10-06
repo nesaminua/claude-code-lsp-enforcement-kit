@@ -6,7 +6,11 @@
 // Suggests LSP equivalent for the active provider (cclsp / Serena / ...).
 // Allows: git grep, non-code paths, non-code file types.
 
-const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const {
+  buildGrepSuggestion,
+  buildStructuredGrepSuggestions,
+  buildStructuredBlockResponse,
+} = require('./lib/detect-lsp-provider');
 
 // Zero-width / formatting chars that would split tokens invisibly and
 // bypass ASCII regex symbol detection.
@@ -103,21 +107,22 @@ process.stdin.on('end', () => {
   // targeting non-code files AND doesn't touch code paths.
   if (hasNonCodeTarget && !targetsCode) process.exit(0);
 
-  const suggestions = symbols.map(sym => {
-    const intent = /^[A-Z]/.test(sym) ? 'symbol_search' : 'references';
-    return `  ${sym}:\n${buildSuggestion(sym, intent, '    ')}`;
-  }).join('\n');
+  // A grep finds definitions and uses alike, so the suggestion names both
+  // calls instead of guessing one from the symbol's casing.
+  const suggestions = symbols
+    .map(sym => `  ${sym}:\n${buildGrepSuggestion(sym, '    ')}`)
+    .join('\n');
 
   process.stderr.write(
     `\n⛔ LSP-FIRST: Blocked grep/rg — found ${symbols.length} code symbol(s): ${symbols.join(', ')}\n` +
     `LSP is always connected. Use:\n${suggestions}\n\n`
   );
 
-  const intent = /^[A-Z]/.test(symbols[0]) ? 'symbol_search' : 'references';
   console.log(JSON.stringify(buildStructuredBlockResponse({
     hook: 'bash-grep-block',
     symbols,
-    intent,
+    intent: 'find_and_references',
+    suggestionsFor: buildStructuredGrepSuggestions,
     reason: `LSP-FIRST: Pattern contains code symbols [${symbols.join(', ')}]. Use LSP:\n${suggestions}`,
   })));
 });

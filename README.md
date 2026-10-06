@@ -38,10 +38,12 @@ Symbols: handleSubmit, UserService
 
 LSP tools:
   handleSubmit:
-    mcp__cclsp__find_references("handleSubmit")  (cclsp)
+    find: mcp__cclsp__find_workspace_symbols(query="handleSubmit")  (cclsp)
+    uses: mcp__cclsp__find_references(file_path=<file from find>, symbol_name=<name from find>)  (cclsp)
 
   UserService:
-    mcp__cclsp__find_workspace_symbols("UserService")  (cclsp)
+    find: mcp__cclsp__find_workspace_symbols(query="UserService")  (cclsp)
+    uses: mcp__cclsp__find_references(file_path=<file from find>, symbol_name=<name from find>)  (cclsp)
 ```
 
 When Claude tries to `Read` a code file without warming up LSP, the progressive gate blocks:
@@ -221,10 +223,14 @@ Intercepts every Grep call. Detects code symbols in the pattern. Blocks with a s
 Symbols: handleSubmit
 LSP tools:
   handleSubmit:
-    mcp__cclsp__find_references("handleSubmit")  (cclsp)
-    mcp__serena__find_referencing_symbols("handleSubmit")  (Serena)
+    find: mcp__cclsp__find_workspace_symbols(query="handleSubmit")  (cclsp)
+    uses: mcp__cclsp__find_references(file_path=<file from find>, symbol_name=<name from find>)  (cclsp)
+    find: mcp__serena__find_symbol(name_path_pattern="handleSubmit", substring_matching=true)  (Serena)
+    uses: mcp__serena__find_referencing_symbols(name_path=<name_path from find>, relative_path=<file from find>)  (Serena)
 ```
-If only one provider is installed, only that suggestion appears.
+If only one provider is installed, only its lines appear.
+
+A grep matches a name where it is defined, everywhere it is used, and inside longer names, so no single LSP call is its equivalent and the name's casing does not say which was meant. Each provider gets two calls: `find` locates the symbol by name or substring (as grep does, it also matches longer names), and `uses` lists the references of the symbol `find` returned, by its exact name (for Serena, its name path such as `UserService/findOne`) and file, which both providers need. A dotted name such as `router.refresh` is searched by its last segment, since symbol names hold no dots; a file name such as `utils.ts` gets no LSP call, since none finds files.
 
 ### 2. `lsp-first-glob-guard.js` — Glob Symbol Blocker
 

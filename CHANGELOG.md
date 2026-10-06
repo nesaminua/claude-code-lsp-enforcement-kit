@@ -4,6 +4,15 @@ All notable changes to the LSP Enforcement Kit. Format based on [Keep a Changelo
 
 ## [Unreleased]
 
+### Added
+- `test/`: a zero-dependency `node:test` suite for the grep guards. Run it with `node --test test/*.test.js`.
+
+### Changed
+- **Structured block output of the grep guards** (`lsp-first-guard`, `bash-grep-block`): `intent` is now `find_and_references`, and each entry in `suggestions` carries a `step` (`find` or `uses`), `args` with the provider's real parameter names, and `fromFind`, the args that hold a placeholder (`<name from find>`, `<name_path from find>`, `<file from find>`) to fill in from the `find` result. The Glob guard's output is unchanged.
+
+### Fixed
+- **Grep block messages suggested the wrong LSP call.** The call was picked from the symbol's casing (PascalCase got symbol search, camelCase got references) with an exact-name match, so `grep -in "DockOverview" Dock.tsx`, a usage lookup, was told to run `find_symbol("DockOverview")`, and the substring search `grep -rn "Overview"` was told to run `find_symbol("Overview")`, which matches only a symbol named exactly that. A grep finds definitions and uses alike, so the message now names both calls per provider, with real parameter names: Serena `find_symbol(name_path_pattern=..., substring_matching=true)` then `find_referencing_symbols(name_path=..., relative_path=...)`; cclsp `find_workspace_symbols(query=...)` then `find_references(file_path=..., symbol_name=...)`. The references call takes the exact name and file from the `find` result: both tools need the defining file, and Serena needs the exact name path (`UserService/findOne`), which a substring pattern is not. The old one-argument calls could not run as written. Dotted names (`router.refresh`) are searched by their last segment; a file name the Grep guard blocks as dotted (`utils.ts`) gets no LSP call instead of a symbol search for `ts`.
+
 ## [2.3.2] — 2026-04-14
 
 ### Added

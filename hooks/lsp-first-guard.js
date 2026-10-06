@@ -4,7 +4,11 @@
 // lsp-first-guard.js — PreToolUse hook (matcher: Grep)
 // Blocks Grep on code symbols. Suggests LSP equivalent for the active provider.
 
-const { buildSuggestion, buildStructuredBlockResponse } = require('./lib/detect-lsp-provider');
+const {
+  buildGrepSuggestion,
+  buildStructuredGrepSuggestions,
+  buildStructuredBlockResponse,
+} = require('./lib/detect-lsp-provider');
 
 let raw = '';
 process.stdin.setEncoding('utf8');
@@ -40,10 +44,11 @@ process.stdin.on('end', () => {
 
   if (symbolParts.length === 0) process.exit(0);
 
-  const suggestions = symbolParts.map(sym => {
-    const intent = /^[A-Z]/.test(sym) ? 'symbol_search' : 'references';
-    return `  ${sym}:\n${buildSuggestion(sym, intent, '    ')}`;
-  }).join('\n');
+  // A grep finds definitions and uses alike, so the suggestion names both
+  // calls instead of guessing one from the symbol's casing.
+  const suggestions = symbolParts
+    .map(sym => `  ${sym}:\n${buildGrepSuggestion(sym, '    ')}`)
+    .join('\n');
 
   process.stderr.write(
     `\n⛔ LSP-FIRST BLOCK: ${symbolParts.length} code symbol(s) in Grep — use LSP instead\n` +
@@ -52,11 +57,11 @@ process.stdin.on('end', () => {
 
   // Emit structured JSON for programmatic consumers (monitoring, dashboards, IDE plugins).
   // `decision` and `reason` fields remain backward compatible.
-  const intent = /^[A-Z]/.test(symbolParts[0]) ? 'symbol_search' : 'references';
   console.log(JSON.stringify(buildStructuredBlockResponse({
     hook: 'lsp-first-guard',
     symbols: symbolParts,
-    intent,
+    intent: 'find_and_references',
+    suggestionsFor: buildStructuredGrepSuggestions,
     reason: `LSP-FIRST: Pattern contains code symbol(s) [${symbolParts.join(', ')}]. Use LSP tools:\n${suggestions}`,
   })));
 });
