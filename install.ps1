@@ -114,8 +114,18 @@ $postToolUse = @(
 )
 
 $sessionStart = @(
-    @{ matcher = 'true'; hooks = @(@{ type = 'command'; command = 'node ~/.claude/hooks/lsp-session-reset.js' }) }
+    @{ hooks = @(@{ type = 'command'; command = 'node ~/.claude/hooks/lsp-session-reset.js' }) }
 )
+
+# SessionStart matchers filter on the session source (startup, resume, clear, compact, fork),
+# so the matcher 'true' written by installs before v2.3.3 never fired. Drop it on upgrade.
+foreach ($entry in $settings.hooks.SessionStart) {
+    if ($entry -and $entry.ContainsKey('matcher') -and $entry.matcher -eq 'true' -and $entry.hooks) {
+        foreach ($h in $entry.hooks) {
+            if ($h.command -eq $sessionStart[0].hooks[0].command) { $entry.Remove('matcher'); break }
+        }
+    }
+}
 
 foreach ($entry in $preToolUse) {
     if (-not (Has-HookCommand -Array $settings.hooks.PreToolUse -Command $entry.hooks[0].command)) {

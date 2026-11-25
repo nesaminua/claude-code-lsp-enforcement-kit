@@ -522,11 +522,10 @@ Add to `PostToolUse` array:
 }
 ```
 
-Add to `SessionStart` array (create it if missing):
+Add to `SessionStart` array (create it if missing). Leave out `matcher`: for `SessionStart` it filters on how the session started (`startup`, `resume`, `clear`, `compact`), so any other value means the hook never runs.
 
 ```json
 {
-  "matcher": "true",
   "hooks": [{ "type": "command", "command": "node ~/.claude/hooks/lsp-session-reset.js" }]
 }
 ```

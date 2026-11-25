@@ -4,6 +4,11 @@ All notable changes to the LSP Enforcement Kit. Format based on [Keep a Changelo
 
 ## [Unreleased]
 
+## [2.3.3] — 2026-11-25
+
+### Fixed
+- **`SessionStart` hook never ran.** `install.sh`, `install.ps1` and the manual-setup snippet in the README registered `lsp-session-reset.js` with `"matcher": "true"`. For `SessionStart` the matcher is compared with how the session started (`startup`, `resume`, `clear`, `compact`, `fork`), so `"true"` matched nothing and the warmup gate was never reset between sessions. The entry is now registered without a matcher, and re-running the installer removes `"matcher": "true"` from an existing install.
+
 ## [2.3.2] — 2026-04-14
 
 ### Added

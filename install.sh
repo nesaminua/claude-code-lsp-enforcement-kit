@@ -52,7 +52,7 @@ const postToolUse = [
 ];
 
 const sessionStart = [
-  { matcher: 'true', hooks: [{ type: 'command', command: 'node ~/.claude/hooks/lsp-session-reset.js' }] },
+  { hooks: [{ type: 'command', command: 'node ~/.claude/hooks/lsp-session-reset.js' }] },
 ];
 
 if (!settings.hooks) settings.hooks = {};
@@ -76,6 +76,15 @@ for (const entry of preToolUse) {
 for (const entry of postToolUse) {
   if (!hasHook(settings.hooks.PostToolUse, entry.hooks[0].command)) {
     settings.hooks.PostToolUse.push(entry);
+  }
+}
+
+// SessionStart matchers filter on the session source (startup, resume, clear, compact, fork),
+// so the matcher 'true' written by installs before v2.3.3 never fired. Drop it on upgrade.
+for (const entry of settings.hooks.SessionStart) {
+  if (entry && entry.matcher === 'true' && Array.isArray(entry.hooks)
+      && entry.hooks.some(h => h && h.command === sessionStart[0].hooks[0].command)) {
+    delete entry.matcher;
   }
 }
 
